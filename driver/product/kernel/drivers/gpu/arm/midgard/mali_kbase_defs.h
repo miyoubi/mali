@@ -582,6 +582,21 @@ struct kbase_mmu_mode {
 
 struct kbase_mmu_mode const *kbase_mmu_mode_get_aarch64(void);
 
+#if defined(MTK_GPU_BM_2)
+struct job_status_qos {
+	phys_addr_t phyaddr;
+	size_t size;
+};
+
+struct v1_data {
+	unsigned int version;
+	unsigned int ctx;
+	unsigned int frame;
+	unsigned int job;
+	unsigned int freq;
+};
+#endif
+
 #define DEVNAME_SIZE	16
 
 /**
@@ -1224,6 +1239,15 @@ struct kbase_device {
 	struct priority_control_manager_device *pcm_dev;
 
 	struct notifier_block oom_notifier_block;
+
+#if IS_ENABLED(CONFIG_MTK_IOMMU_V2)
+	struct ion_client *client;
+#endif
+
+#if defined(MTK_GPU_BM_2)
+	struct job_status_qos job_status_addr;
+	struct v1_data *v1;
+#endif
 
 };
 

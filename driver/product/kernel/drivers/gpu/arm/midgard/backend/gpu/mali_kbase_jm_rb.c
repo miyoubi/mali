@@ -757,6 +757,13 @@ static int kbase_jm_exit_protected_mode(struct kbase_device *kbdev,
 		/*
 		 * Exiting protected mode requires a reset, but first the L2
 		 * needs to be powered down to ensure it's not active when the
+		/* L2 cache has been turned off (which is needed prior to the reset of GPU
+		 * to exit the protected mode), so the override flag can be safely cleared.
+		 * Even if L2 cache is powered up again before the actual reset, it should
+		 * not be an issue (there are no jobs running on the GPU).
+		 */
+		kbase_pm_protected_override_disable(kbdev);
+
 		 * reset is issued.
 		 */
 		katom[idx]->protected_state.exit =
@@ -1154,6 +1161,14 @@ bool kbase_gpu_irq_evict(struct kbase_device *kbdev, int js,
 		kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged =
 			SLOT_RB_TAG_KCTX(katom->kctx);
 
+		/* On evicting the next_katom, the last submission kctx on the
+		 * given job slot then reverts back to the one that owns katom.
+		 * The aim is to enable the next submission that can determine
+		 * if the read only shader core L1 cache should be invalidated.
+		 */
+		kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged =
+			SLOT_RB_TAG_KCTX(katom->kctx);
+
 		return true;
 	}
 
@@ -1355,6 +1370,9 @@ void kbase_gpu_complete_hw(struct kbase_device *kbdev, int js,
 									   sizeof(js_string)),
 					       ktime_to_ns(ktime_get_raw()), 0, 0, 0);
 		}
+
+		/* Clear the slot's last katom submission kctx on reset */
+		kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged = SLOT_RB_NULL_TAG_VAL;
 	}
 #endif
 
@@ -1523,6 +1541,11 @@ static inline void kbase_gpu_stop_atom(struct kbase_device *kbdev,
 	kbase_job_check_enter_disjoint(kbdev, action, katom->core_req, katom);
 	kbasep_job_slot_soft_or_hard_stop_do_action(kbdev, js, hw_action,
 							katom->core_req, katom);
+						/* Revert the last_context. */
+						kbdev->hwaccess.backend.slot_rb[js]
+							.last_kctx_tagged =
+							SLOT_RB_TAG_KCTX(katom_idx0->kctx);
+
 	kbase_jsctx_slot_prio_blocked_set(kctx, js, katom->sched_priority);
 }
 
@@ -1598,6 +1621,10 @@ bool kbase_backend_soft_hard_stop_slot(struct kbase_device *kbdev,
 		else
 			katom_idx1_valid = false;
 	} else {
+					/* Revert the last_context, or mark as purged */
+					kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged =
+					katom_idx0->kctx ? SLOT_RB_TAG_KCTX(katom_idx0->kctx) :
+					SLOT_RB_TAG_PURGED;
 		katom_idx0_valid = (katom_idx0 && (!kctx || kctx_idx0 == kctx));
 		katom_idx1_valid = (katom_idx1 && (!kctx || kctx_idx1 == kctx));
 	}
@@ -1841,6 +1868,37 @@ void kbase_gpu_dump_slots(struct kbase_device *kbdev)
 	}
 
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+}
+
+void kbase_backend_slot_kctx_purge_locked(struct kbase_device *kbdev, struct kbase_context *kctx)
+{
+	int js;
+	bool tracked = false;
+
+	lockdep_assert_held(&kbdev->hwaccess_lock);
+
+	for (js = 0; js < kbdev->gpu_props.num_job_slots; js++) {
+		u64 tagged_kctx = kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged;
+
+		if (tagged_kctx == SLOT_RB_TAG_KCTX(kctx)) {
+			/* Marking the slot kctx tracking field is purged */
+			kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged = SLOT_RB_TAG_PURGED;
+			tracked = true;
+		}
+	}
+
+	if (tracked) {
+		/* The context had run some jobs before the purge, other slots
+		 * in SLOT_RB_NULL_TAG_VAL condition needs to be marked as
+		 * purged as well.
+		 */
+		for (js = 0; js < kbdev->gpu_props.num_job_slots; js++) {
+			if (kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged ==
+			    SLOT_RB_NULL_TAG_VAL)
+				kbdev->hwaccess.backend.slot_rb[js].last_kctx_tagged =
+					SLOT_RB_TAG_PURGED;
+		}
+	}
 }
 
 void kbase_backend_slot_kctx_purge_locked(struct kbase_device *kbdev, struct kbase_context *kctx)

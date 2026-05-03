@@ -47,6 +47,8 @@
 #include <mali_kbase_dummy_job_wa.h>
 #include <backend/gpu/mali_kbase_clk_rate_trace_mgr.h>
 
+#include "../../platform/mtk_platform_common.h"
+
 /**
  * kbase_backend_late_init - Perform any backend-specific initialization.
  * @kbdev:	Device pointer
@@ -162,6 +164,11 @@ static int kbase_device_hwcnt_watchdog_if_init(struct kbase_device *kbdev)
 	return kbase_hwcnt_watchdog_if_timer_create(&kbdev->hwcnt_watchdog_timer);
 }
 
+	// *** MTK ***
+	{mtk_common_device_init, mtk_common_device_term,
+			"MTK common initialization failed"},
+	{mtk_platform_device_init, mtk_platform_device_term,
+			"MTK platform initialization failed"},
 /**
  * kbase_device_hwcnt_watchdog_if_term - Terminate hardware counter watchdog
  *                                       interface.
